@@ -43,6 +43,7 @@ async function run() {
 
     const userCollection = client.db("mfsDB").collection("user");
     const transactionCollection = client.db("mfsDB").collection("transactions");
+    const cashInRequestCollection = client.db("mfsDB").collection("cashInRequest");
 
 
     // Secret key for JWT
@@ -480,6 +481,148 @@ app.post('/api/send-money', authenticateToken, async (req, res) => {
   }
 });
 
+ // Cash-In request from user to agent
+ app.post('/api/cash-in-request', authenticateToken, async (req, res) => {
+  const { agentEmail, amount } = req.body;
+  const userEmail = req.user.email; // Assuming user email is retrieved from JWT
+
+  try {
+    // Find agent by email and role
+    const agent = await userCollection.findOne({ email: agentEmail, role: 'agent' });
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    // Create a cash-in request
+    const cashInRequest = {
+      user: userEmail,
+      agent: agentEmail,
+      amount: parseFloat(amount),
+      status: 'pending',
+      createdAt: new Date()
+    };
+
+    // Insert the cash-in request into the database
+    const result = await cashInRequestCollection.insertOne(cashInRequest);
+
+    res.status(201).json({ message: 'Cash-in request sent successfully', requestId: result.insertedId });
+  } catch (error) {
+    console.error('Error sending cash-in request:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/manage-cash-in-request/:requestId', authenticateToken, async (req, res) => {
+  const { requestId } = req.params;
+  const { action } = req.body;
+
+  try {
+    const cashInRequest = await cashInRequestCollection.findOne({ _id: new ObjectId(requestId) });
+    if (!cashInRequest) {
+      return res.status(404).json({ error: 'Cash-in request not found' });
+    }
+
+    const agent = await userCollection.findOne({ email: req.user.email, role: 'agent' });
+    if (!agent) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    let updateQuery;
+    if (action === 'approve') {
+      updateQuery = { $set: { status: 'approved' } };
+      await userCollection.updateOne({ email: cashInRequest.user }, { $inc: { balance: cashInRequest.amount } });
+      await userCollection.updateOne({ email: cashInRequest.agent }, { $inc: { balance: -cashInRequest.amount } });
+
+      const transaction = {
+        senderEmail: cashInRequest.agent,
+        recipientEmail: cashInRequest.user,
+        amount: cashInRequest.amount,
+        transactionFee: 0,
+        totalAmount: cashInRequest.amount,
+        date: new Date()
+      };
+      await transactionCollection.insertOne(transaction);
+    } else if (action === 'reject') {
+      updateQuery = { $set: { status: 'rejected' } };
+    } else {
+      return res.status(400).json({ error: 'Invalid action' });
+    }
+
+    await cashInRequestCollection.updateOne({ _id: new ObjectId(requestId) }, updateQuery);
+
+    res.json({ message: 'Cash-in request updated successfully' });
+  } catch (error) {
+    console.error('Error managing cash-in request:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// // Get Agent's Transaction Management (Cash-In requests)
+// Get Agent's Transaction Management (Cash-In requests)
+app.get('/api/cash-in-requests', authenticateToken, async (req, res) => {
+  const { page = 1, limit = 4 } = req.query;
+
+  try {
+    // Check if the request comes from an agent
+    const agent = await userCollection.findOne({ email: req.user.email, role: 'agent' });
+    if (!agent) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const skip = (page - 1) * limit;
+
+    // Fetch all cash-in requests for this agent with sorting and pagination using aggregation
+    const cashInRequests = await cashInRequestCollection.aggregate([
+      { $match: { agent: req.user.email } },
+      {
+        $addFields: {
+          statusOrder: {
+            $switch: {
+              branches: [
+                { case: { $eq: ["$status", "pending"] }, then: 1 },
+                { case: { $eq: ["$status", "approved"] }, then: 2 },
+                { case: { $eq: ["$status", "rejected"] }, then: 3 },
+              ],
+              default: 4
+            }
+          }
+        }
+      },
+      { $sort: { statusOrder: 1 } }, // Sort by status order
+      { $skip: skip },
+      { $limit: parseInt(limit) }
+    ]).toArray();
+
+    const totalRequests = await cashInRequestCollection.countDocuments({ agent: req.user.email });
+    const totalPages = Math.ceil(totalRequests / limit);
+
+    res.json({ cashInRequests, totalPages });
+  } catch (error) {
+    console.error('Error fetching cash-in requests:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+// app.get('/api/agent-transactions/cash-in', authenticateToken, async (req, res) => {
+//   try {
+//     const agent = await userCollection.findOne({ email: req.user.email });
+//     if (!agent) {
+//       return res.status(404).json({ error: 'Agent not found' });
+//     }
+
+//     const cashInRequests = await transactionCollection.find({
+//       recipientEmail: agent.email,
+//       type: 'cash-in',
+//       status: 'pending'
+//     }).toArray();
+
+//     res.json(cashInRequests);
+//   } catch (error) {
+//     console.error('Error fetching agent transactions:', error);
+//     res.status(500).json({ error: 'Internal server error' });
+//   }
+// });
 
 // Paginated transaction history for a single user
 app.get('/api/transactions', async (req, res) => {
