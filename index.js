@@ -399,6 +399,87 @@ app.post('/api/send-money', authenticateToken, async (req, res) => {
   }
 });
 
+ // Cash-out route
+ app.post('/api/cash-out', authenticateToken, async (req, res) => {
+  const { agentEmail, amount, pin } = req.body;
+  const user = req.user;
+
+  try {
+    // Find user by email
+    const currentUser = await userCollection.findOne({ email: user.email });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Verify PIN
+    const isPinValid = await bcrypt.compare(pin, currentUser.pin);
+    if (!isPinValid) {
+      return res.status(401).json({ error: "Invalid PIN" });
+    }
+
+    // Find agent by email
+    const agent = await userCollection.findOne({ email: agentEmail });
+    if (!agent || agent.role !== 'agent') {
+      return res.status(404).json({ error: "Agent not found" });
+    }
+
+    // Calculate transaction fee
+    const transactionFee = amount * 0.015; // 1.5% fee
+
+    // Total amount to deduct from user (amount + fee)
+    const totalAmountToDeduct = amount + transactionFee;
+
+    // Check user balance
+    if (currentUser.balance < totalAmountToDeduct) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
+
+    // Start a session for transaction
+    const session = client.startSession();
+    session.startTransaction();
+
+    try {
+      // Deduct amount from user's balance
+      await userCollection.updateOne(
+        { email: currentUser.email },
+        { $inc: { balance: -totalAmountToDeduct } },
+        { session }
+      );
+
+      // Add amount to agent's balance
+      await userCollection.updateOne(
+        { email: agent.email },
+        { $inc: { balance: amount } },
+        { session }
+      );
+
+      // Log transaction
+      await transactionCollection.insertOne(
+        {
+          senderEmail: currentUser.email,
+          recipientEmail: agent.email,
+          amount,
+          transactionFee,
+          totalAmount: totalAmountToDeduct,
+          date: new Date()
+        },
+        { session }
+      );
+
+      await session.commitTransaction();
+      session.endSession();
+
+      res.json({ message: "Cash-out successful" });
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      res.status(500).json({ error: "Transaction failed" });
+    }
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 
 // Paginated transaction history for a single user
 app.get('/api/transactions', async (req, res) => {
