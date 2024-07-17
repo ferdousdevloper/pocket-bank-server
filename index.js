@@ -49,16 +49,22 @@ async function run() {
 const jwtSecret = process.env.ACCESS_TOKEN_SECRET; 
 
 // Middleware for authenticating JWT
-function authenticateToken(req, res, next) {
-  const token = req.headers['authorization'];
-  if (!token) return res.sendStatus(401);
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
-  jwt.verify(token, jwtSecret, (err, user) => {
-    if (err) return res.sendStatus(403);
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     req.user = user;
     next();
   });
-}
+};
 /*
     // Register a new user
     app.post("/api/register", async (req, res) => {
@@ -311,19 +317,30 @@ app.get("/api/user/status/:email", async (req, res) => {
 });
 
 //for send money
-app.post('/api/send-money', async (req, res) => {
-  const { senderEmail, recipientEmail, amount } = req.body;
-
-  if (amount < 50) {
-    return res.status(400).json({ error: "Transaction must be at least 50 Taka" });
-  }
+app.post('/api/send-money', authenticateToken, async (req, res) => {
+  const { senderEmail, recipientEmail, amount, pin } = req.body;
 
   try {
+    // Find sender by email
     const sender = await userCollection.findOne({ email: senderEmail });
-    const recipient = await userCollection.findOne({ email: recipientEmail });
+    if (!sender) {
+      return res.status(404).json({ error: "Sender not found" });
+    }
 
-    if (!sender || !recipient) {
-      return res.status(404).json({ error: "Sender or recipient not found" });
+    // Compare PIN using bcrypt
+    const isPinValid = await bcrypt.compare(pin, sender.pin);
+    if (!isPinValid) {
+      return res.status(401).json({ error: "Invalid PIN" });
+    }
+
+    if (amount < 50) {
+      return res.status(400).json({ error: "Transaction must be at least 50 Taka" });
+    }
+
+    // Find recipient by email
+    const recipient = await userCollection.findOne({ email: recipientEmail });
+    if (!recipient) {
+      return res.status(404).json({ error: "Recipient not found" });
     }
 
     let transactionFee = 0;
@@ -373,12 +390,15 @@ app.post('/api/send-money', async (req, res) => {
     } catch (error) {
       await session.abortTransaction();
       session.endSession();
+      console.error("Transaction error:", error);
       res.status(500).json({ error: "Transaction failed" });
     }
   } catch (error) {
+    console.error("Internal server error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 // Paginated transaction history for a single user
 app.get('/api/transactions', async (req, res) => {
