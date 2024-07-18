@@ -177,8 +177,9 @@ app.post("/api/login", async (req, res) => {
 });
 
 // Get all users
+// Get all users
 app.get('/api/users', authenticateToken, async (req, res) => {
-  const { search } = req.query;
+  const { search, page = 1, limit = 6 } = req.query;
   
   try {
     let query = {};
@@ -186,8 +187,15 @@ app.get('/api/users', authenticateToken, async (req, res) => {
       query = { name: { $regex: search, $options: 'i' } }; // Case-insensitive search
     }
     
-    const users = await userCollection.find(query).toArray();
-    res.json(users);
+    const skip = (page - 1) * limit;
+    const totalUsers = await userCollection.countDocuments(query);
+    const users = await userCollection.find(query).skip(skip).limit(Number(limit)).toArray();
+    
+    res.json({
+      users,
+      totalPages: Math.ceil(totalUsers / limit),
+      currentPage: Number(page)
+    });
   } catch (error) {
     console.error("Error fetching users:", error);
     res.status(500).json({ message: "Failed to fetch users" });
