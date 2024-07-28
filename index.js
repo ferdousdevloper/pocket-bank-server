@@ -14,8 +14,8 @@ const port = process.env.PORT || 5000;
 const corsOptions = {
   origin: [
     "http://localhost:5173",
-    //   "http://localhost:5174",
-    //   "https://diagnocare-48d76.web.app"
+    "https://pocket-bank-mfs.netlify.app",
+   "https://pocket-bank-client.vercel.app"
   ],
   // credentials: true,
   // optionSuccessStatus: 200,
